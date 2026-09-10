@@ -2,17 +2,19 @@ import { useState } from 'react'
 import { Building2, Mail, Phone, CreditCard, FileCheck2, MapPin, ArrowRight } from 'lucide-react'
 
 const initialForm = {
-  business_name: 'Acme Innovations Ltd',
-  email: 'finance@acme.com',
-  phone: '+91 98765 43210',
-  pan: 'AAECR1234F',
-  gstin: '27AAAAA0000A1Z5',
-  address: '123 Business Tower, MG Road, Bengaluru, Karnataka – 560001',
+  business_name: '',
+  email: '',
+  phone: '',
+  pan: '',
+  gstin: '',
+  address: '',
 }
 
-export default function OnboardingForm({ onSubmit, submitting }) {
+export default function OnboardingForm({ onSubmit, submitting, onLogin, loggingIn, loginError }) {
   const [form, setForm] = useState(initialForm)
   const [errors, setErrors] = useState({})
+  const [showLogin, setShowLogin] = useState(false)
+  const [loginEmail, setLoginEmail] = useState('')
 
   function update(field, value) {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -166,7 +168,35 @@ export default function OnboardingForm({ onSubmit, submitting }) {
       </button>
 
       <div className="form-footer-login">
-        Already have an account? <a href="#login" onClick={(e) => { e.preventDefault(); alert('Logging in with active case!') }}>Log in</a>
+        {!showLogin ? (
+          <>
+            Already have an account?{' '}
+            <a href="#login" onClick={(e) => { e.preventDefault(); setShowLogin(true) }}>Log in</a>
+          </>
+        ) : (
+          <div style={{ marginTop: 10, textAlign: 'left' }}>
+            <label className="form-field-label">Enter the email you signed up with</label>
+            <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+              <input
+                className="form-input-styled"
+                type="email"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                placeholder="you@company.com"
+                style={{ flex: 1 }}
+              />
+              <button
+                type="button"
+                className="btn btn-secondary"
+                disabled={loggingIn || !loginEmail.trim()}
+                onClick={() => onLogin(loginEmail.trim())}
+              >
+                {loggingIn ? 'Looking up…' : 'Continue'}
+              </button>
+            </div>
+            {loginError && <span className="form-error">{loginError}</span>}
+          </div>
+        )}
       </div>
     </form>
   )

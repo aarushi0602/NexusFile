@@ -9,6 +9,11 @@ export async function createCase(profile) {
   return res.data
 }
 
+export async function findCaseByEmail(email) {
+  const res = await client.get('/case/lookup', { params: { email } })
+  return res.data
+}
+
 export async function uploadInvoices(files, caseId) {
   const formData = new FormData()
   for (const file of files) formData.append('files', file)

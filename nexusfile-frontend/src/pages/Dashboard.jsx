@@ -11,11 +11,10 @@ import {
   UploadCloud, 
   Check, 
   ArrowRight,
-  FileCheck2,
-  Sparkles
+  FileCheck2
 } from 'lucide-react'
 import OnboardingForm from '../components/OnboardingForm'
-import { createCase, uploadInvoices } from '../api/client'
+import { createCase, uploadInvoices, findCaseByEmail } from '../api/client'
 
 export default function Dashboard() {
   const [step, setStep] = useState(1) // 1 = Business Details, 2 = Upload Documents
@@ -25,50 +24,59 @@ export default function Dashboard() {
   const [uploading, setUploading] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState([])
   const [error, setError] = useState(null)
+  const [loggingIn, setLoggingIn] = useState(false)
+  const [loginError, setLoginError] = useState(null)
   const navigate = useNavigate()
+
+  async function handleLogin(email) {
+    setLoggingIn(true)
+    setLoginError(null)
+    try {
+      const found = await findCaseByEmail(email)
+      navigate(`/case/${found.case_id}/ingestion`)
+    } catch (err) {
+      setLoginError('No account found for that email — check the spelling, or create a new account below.')
+    } finally {
+      setLoggingIn(false)
+    }
+  }
 
   async function handleProfileSubmit(profileData) {
     setSubmitting(true)
     setError(null)
     try {
       const result = await createCase(profileData)
-      const newCaseId = result.case_id || 'case-' + Date.now()
-      setCaseId(newCaseId)
+      setCaseId(result.case_id)
       setProfile(profileData)
       setStep(2)
     } catch (err) {
-      console.warn('Backend call failed, continuing with mock case for demo:', err)
-      const fallbackId = 'case-demo-2024'
-      setCaseId(fallbackId)
-      setProfile(profileData)
-      setStep(2)
+      console.error('Could not create case:', err)
+      setError('Could not create your account — check that the backend is running and try again.')
     } finally {
       setSubmitting(false)
     }
   }
 
   async function handleFilesSelected(files) {
-    if (!files || files.length === 0) return
+    if (!files || files.length === 0 || !caseId) return
     setUploading(true)
     setError(null)
     const fileList = Array.from(files)
-    setUploadedFiles((prev) => [...prev, ...fileList.map((f) => f.name)])
 
     try {
-      await uploadInvoices(fileList, caseId || 'case-demo-2024')
+      await uploadInvoices(fileList, caseId)
+      setUploadedFiles((prev) => [...prev, ...fileList.map((f) => f.name)])
     } catch (err) {
-      console.warn('Upload API notice:', err)
+      console.error('Upload failed:', err)
+      setError('Upload failed — check that the backend is running and try again.')
     } finally {
       setUploading(false)
     }
   }
 
-  function handleDemoSeed() {
-    setUploadedFiles(['INV-2024-089.pdf', 'EWB-8839201.pdf', 'STMT-JULY-HDFC.pdf'])
-  }
-
   function handleProceedToHub() {
-    navigate(`/case/${caseId || 'case-demo-2024'}/ingestion`)
+    if (!caseId) return
+    navigate(`/case/${caseId}/ingestion`)
   }
 
   return (
@@ -206,7 +214,13 @@ export default function Dashboard() {
                 Get started by providing your business details. This will help us create your account and set up your case.
               </p>
 
-              <OnboardingForm onSubmit={handleProfileSubmit} submitting={submitting} />
+              <OnboardingForm
+                onSubmit={handleProfileSubmit}
+                submitting={submitting}
+                onLogin={handleLogin}
+                loggingIn={loggingIn}
+                loginError={loginError}
+              />
             </div>
           ) : (
             <div>
@@ -260,19 +274,16 @@ export default function Dashboard() {
                 </div>
               )}
 
+              {error && (
+                <div style={{ marginTop: 12, fontSize: 12.5, color: '#DC2626' }}>{error}</div>
+              )}
+
               <div style={{ marginTop: 24, display: 'flex', gap: 12, alignItems: 'center' }}>
-                <button 
-                  type="button" 
-                  className="btn btn-secondary" 
-                  onClick={handleDemoSeed}
-                  style={{ fontSize: 12.5 }}
-                >
-                  <Sparkles size={14} /> Quick Demo Invoices
-                </button>
                 <button 
                   type="button" 
                   className="btn btn-primary" 
                   onClick={handleProceedToHub}
+                  disabled={uploadedFiles.length === 0}
                   style={{ flex: 1, padding: '11px 16px' }}
                 >
                   Proceed to Ingestion Hub <ArrowRight size={16} />

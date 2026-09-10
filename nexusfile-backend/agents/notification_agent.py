@@ -1,8 +1,7 @@
 """
 Notification Agent: tells the business their return has been filed,
-by email. This is the agent that makes the loop feel closed — without
-it, a business has no way of knowing the work actually happened,
-which defeats the point of automating it.
+by email. Without this, a business has no way of knowing the work
+actually happened, which defeats the point of automating it.
 """
 from services import notification_client, firestore_client
 
@@ -22,7 +21,6 @@ class NotificationAgent:
         )
 
         results = {}
-
         email = profile.get("email")
         if email:
             try:

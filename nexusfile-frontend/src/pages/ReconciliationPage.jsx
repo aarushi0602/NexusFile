@@ -14,49 +14,10 @@ import {
   Save,
   ArrowRight
 } from 'lucide-react'
-import { getCaseInvoices, reconcileCase, emailVendorDiscrepancy } from '../api/client'
+import { getCaseInvoices, reconcileCase, emailVendorDiscrepancy, getCase } from '../api/client'
 
-const BASELINE_RECON = [
-  {
-    id: 'recon-1',
-    invoice_number: 'INV-2024-089',
-    vendor_name: 'TechCorp India Pvt Ltd',
-    vendor_gstin: '27AABCV9603R1Z2',
-    books_date: '15-Jul-2024',
-    books_tax: 12450,
-    gstr2b_date: '15-Jul-2024',
-    gstr2b_tax: 10450,
-    difference: 2000,
-    status: 'mismatched',
-    status_label: 'MISMATCH',
-  },
-  {
-    id: 'recon-2',
-    invoice_number: 'TECH/045/24',
-    vendor_name: 'Tech Dynamics',
-    vendor_gstin: '27AABCT8890K1Z4',
-    books_date: '22-Jul-2024',
-    books_tax: 45000,
-    gstr2b_date: null,
-    gstr2b_tax: null,
-    difference: 45000,
-    status: 'missing_in_gstr2b',
-    status_label: 'MISSING 2B',
-  },
-  {
-    id: 'recon-3',
-    invoice_number: 'OF-992',
-    vendor_name: 'Office Supplies Co',
-    vendor_gstin: '27AAAC09988P1Z9',
-    books_date: '25-Jul-2024',
-    books_tax: 1200,
-    gstr2b_date: '25-Jul-2024',
-    gstr2b_tax: 1200,
-    difference: 0,
-    status: 'matched',
-    status_label: 'MATCHED',
-  },
-]
+const DEMO_PERIOD = '072024'
+const FALLBACK_GSTIN = '27AAAAA0000A1Z5' // used only if the case has no GSTIN on file
 
 function formatINR(val) {
   if (val == null) return '—'
@@ -66,10 +27,11 @@ function formatINR(val) {
 export default function ReconciliationPage() {
   const { caseId } = useParams()
   const navigate = useNavigate()
-  const [reconData, setReconData] = useState(BASELINE_RECON)
+  const [reconData, setReconData] = useState([])
   const [filterTab, setFilterTab] = useState('all') // 'all' | 'mismatched' | 'missing_in_gstr2b'
   const [searchQuery, setSearchQuery] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
   const [draftSaved, setDraftSaved] = useState(false)
 
   // Modals state
@@ -81,42 +43,51 @@ export default function ReconciliationPage() {
 
   useEffect(() => {
     loadReconciliation()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId])
 
   async function loadReconciliation() {
     setLoading(true)
+    setError(null)
     try {
       const invs = await getCaseInvoices(caseId)
-      if (invs && invs.length > 0) {
-        const result = await reconcileCase({
-          case_id: caseId,
-          gstin: '27AAAAA0000A1Z5',
-          period: '072024',
-          invoices: invs,
-        })
-        if (result && result.reconciliation) {
-          // Merge dynamic results with baseline rows
-          const mapped = result.reconciliation.map((r, i) => {
-            const matchInv = invs.find((x) => x.invoice_id === r.invoice_id) || {}
-            return {
-              id: r.invoice_id || `recon-dyn-${i}`,
-              invoice_number: matchInv.invoice_number || `INV-${i + 1}`,
-              vendor_name: matchInv.vendor_name || 'Registered Supplier',
-              vendor_gstin: matchInv.vendor_gstin || '27AAAAA0000A1Z5',
-              books_date: matchInv.invoice_date || '15-Jul-2024',
-              books_tax: r.expected_amount || matchInv.tax_amount || 12000,
-              gstr2b_date: r.status === 'missing_in_gstr2b' ? null : '15-Jul-2024',
-              gstr2b_tax: r.actual_amount,
-              difference: r.difference || 0,
-              status: r.status,
-              status_label: r.status === 'matched' ? 'MATCHED' : r.status === 'mismatched' ? 'MISMATCH' : 'MISSING 2B',
-            }
-          })
-          setReconData(mapped)
-        }
+      if (!invs || invs.length === 0) {
+        setReconData([])
+        return
       }
+
+      const caseInfo = await getCase(caseId).catch(() => null)
+      const gstin = caseInfo?.profile?.gstin || FALLBACK_GSTIN
+
+      const result = await reconcileCase({
+        case_id: caseId,
+        gstin,
+        period: DEMO_PERIOD,
+        invoices: invs,
+      })
+
+      const mapped = (result.reconciliation || []).map((r, i) => {
+        const matchInv = invs.find((x) => x.invoice_id === r.invoice_id) || {}
+        return {
+          id: r.invoice_id || `recon-${i}`,
+          invoice_number: matchInv.invoice_number || `INV-${i + 1}`,
+          vendor_name: matchInv.vendor_name || 'Unknown Supplier',
+          vendor_gstin: matchInv.vendor_gstin || '',
+          books_date: matchInv.invoice_date || null,
+          books_tax: r.expected_amount ?? matchInv.tax_amount ?? 0,
+          gstr2b_date: r.status === 'missing_in_gstr2b' ? null : matchInv.invoice_date,
+          gstr2b_tax: r.actual_amount,
+          difference: r.difference || 0,
+          notes: r.notes || '',
+          status: r.status,
+          status_label: r.status === 'matched' ? 'MATCHED' : r.status === 'mismatched' ? 'MISMATCH' : 'MISSING 2B',
+        }
+      })
+      setReconData(mapped)
     } catch (err) {
-      console.warn('Reconciliation agent running with baseline dataset:', err)
+      console.error('Reconciliation failed:', err)
+      setError('Could not run reconciliation — check that invoices have been ingested and the backend is running.')
+      setReconData([])
     } finally {
       setLoading(false)
     }
@@ -132,13 +103,20 @@ export default function ReconciliationPage() {
     if (filterTab !== 'all' && row.status !== filterTab) return false
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase()
-      const matchInv = row.invoice_number.toLowerCase().includes(q)
-      const matchGstin = row.vendor_gstin.toLowerCase().includes(q)
-      const matchName = row.vendor_name.toLowerCase().includes(q)
+      const matchInv = (row.invoice_number || '').toLowerCase().includes(q)
+      const matchGstin = (row.vendor_gstin || '').toLowerCase().includes(q)
+      const matchName = (row.vendor_name || '').toLowerCase().includes(q)
       if (!matchInv && !matchGstin && !matchName) return false
     }
     return true
   })
+
+  const totalCount = reconData.length
+  const matchedCount = reconData.filter((r) => r.status === 'matched').length
+  const mismatchedCount = reconData.filter((r) => r.status === 'mismatched').length
+  const missingCount = reconData.filter((r) => r.status === 'missing_in_gstr2b').length
+  const actionRequiredCount = mismatchedCount + missingCount
+  const flaggedRows = reconData.filter((r) => r.status !== 'matched')
 
   // Handle Edit Books entry
   function handleSaveEditedBook(newTaxAmount) {
@@ -221,15 +199,15 @@ export default function ReconciliationPage() {
         <div className="recon-kpi-container">
           <div className="recon-kpi-box">
             <div className="recon-kpi-label">TOTAL INVOICES</div>
-            <div className="recon-kpi-value">1,245</div>
+            <div className="recon-kpi-value">{totalCount}</div>
           </div>
           <div className="recon-kpi-box">
             <div className="recon-kpi-label">MATCHED</div>
-            <div className="recon-kpi-value green">1,102</div>
+            <div className="recon-kpi-value green">{matchedCount}</div>
           </div>
           <div className="recon-kpi-box highlight">
             <div className="recon-kpi-label" style={{ color: 'var(--secondary)' }}>AGENT ACTION REQUIRED</div>
-            <div className="recon-kpi-value blue">143</div>
+            <div className="recon-kpi-value blue">{actionRequiredCount}</div>
           </div>
         </div>
       </div>
@@ -251,13 +229,13 @@ export default function ReconciliationPage() {
                 className={`recon-tab ${filterTab === 'mismatched' ? 'active' : ''}`}
                 onClick={() => setFilterTab('mismatched')}
               >
-                MISMATCHED (45)
+                MISMATCHED ({mismatchedCount})
               </button>
               <button 
                 className={`recon-tab ${filterTab === 'missing_in_gstr2b' ? 'active' : ''}`}
                 onClick={() => setFilterTab('missing_in_gstr2b')}
               >
-                MISSING IN 2B (98)
+                MISSING IN 2B ({missingCount})
               </button>
             </div>
 
@@ -283,7 +261,19 @@ export default function ReconciliationPage() {
                 </tr>
               </thead>
               <tbody>
-                {filtered.map((row) => (
+                {loading ? (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>
+                    Matching against GSTR-2B…
+                  </td></tr>
+                ) : error ? (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: '#DC2626', fontSize: 13 }}>
+                    {error}
+                  </td></tr>
+                ) : filtered.length === 0 ? (
+                  <tr><td colSpan={3} style={{ textAlign: 'center', padding: 24, color: 'var(--text-secondary)', fontSize: 13 }}>
+                    {reconData.length === 0 ? 'No invoices ingested yet — upload documents first.' : 'No invoices match this filter.'}
+                  </td></tr>
+                ) : filtered.map((row) => (
                   <tr key={row.id}>
                     {/* Books Data */}
                     <td>
@@ -377,68 +367,72 @@ export default function ReconciliationPage() {
               </div>
             </div>
 
-            {/* Insight Card 1: INV-2024-089 */}
-            <div className="recon-insight-card">
-              <div className="recon-insight-header">
-                <span className="mono" style={{ fontWeight: 700, fontSize: 13 }}>INV-2024-089</span>
-                <span className="pill pill-danger" style={{ fontSize: 10 }}>TAX MISMATCH</span>
-              </div>
-
-              <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                Vendor has declared <strong>₹2,000 less tax</strong> in 2B compared to your books.
+            {flaggedRows.length === 0 ? (
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)', padding: '8px 0' }}>
+                {reconData.length === 0
+                  ? 'Run reconciliation to see agent insights here.'
+                  : 'No issues detected — every invoice matched cleanly.'}
               </p>
+            ) : (
+              flaggedRows.slice(0, 5).map((row) => (
+                <div className="recon-insight-card" key={row.id}>
+                  <div className="recon-insight-header">
+                    <span className="mono" style={{ fontWeight: 700, fontSize: 13 }}>{row.invoice_number}</span>
+                    <span className={row.status === 'mismatched' ? 'pill pill-danger' : 'pill pill-dark'} style={{ fontSize: 10 }}>
+                      {row.status === 'mismatched' ? 'TAX MISMATCH' : 'MISSING'}
+                    </span>
+                  </div>
 
-              <div className="recon-compare-grid">
-                <div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 700 }}>BOOKS:</div>
-                  <div className="num" style={{ fontWeight: 700, fontSize: 13 }}>₹12,450</div>
+                  <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
+                    {row.status === 'mismatched'
+                      ? <>Vendor declared a different amount in 2B than your books show — a difference of <strong>{formatINR(Math.abs(row.difference))}</strong>.</>
+                      : 'Invoice is entirely missing from 2B. ITC cannot be claimed this period unless the supplier files it.'}
+                  </p>
+
+                  {row.status === 'mismatched' ? (
+                    <>
+                      <div className="recon-compare-grid">
+                        <div>
+                          <div style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 700 }}>BOOKS:</div>
+                          <div className="num" style={{ fontWeight: 700, fontSize: 13 }}>{formatINR(row.books_tax)}</div>
+                        </div>
+                        <div>
+                          <div style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 700 }}>GSTR-2B:</div>
+                          <div className="num" style={{ fontWeight: 700, fontSize: 13 }}>{formatINR(row.gstr2b_tax)}</div>
+                        </div>
+                      </div>
+                      <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                        <button
+                          className="btn btn-secondary"
+                          style={{ flex: 1, padding: '7px 8px', fontSize: 11.5 }}
+                          onClick={() => setEditModal(row)}
+                        >
+                          Edit Books entry
+                        </button>
+                        <button
+                          className="btn btn-primary"
+                          style={{ flex: 1, padding: '7px 8px', fontSize: 11.5 }}
+                          onClick={() => setEmailModal(row)}
+                        >
+                          Draft Vendor Email
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ marginTop: 14 }}>
+                      <button
+                        className="btn btn-secondary"
+                        style={{ width: '100%', padding: '7px 8px', fontSize: 11.5 }}
+                        disabled={deferredInvoices.includes(row.invoice_number)}
+                        onClick={() => handleDeferInvoice(row.invoice_number)}
+                      >
+                        {deferredInvoices.includes(row.invoice_number) ? 'Deferred to next period ✓' : 'Defer to next period'}
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <div style={{ color: 'var(--text-muted)', fontSize: 10, fontWeight: 700 }}>GSTR-2B:</div>
-                  <div className="num" style={{ fontWeight: 700, fontSize: 13 }}>₹10,450</div>
-                </div>
-              </div>
-
-              <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
-                <button 
-                  className="btn btn-secondary" 
-                  style={{ flex: 1, padding: '7px 8px', fontSize: 11.5 }}
-                  onClick={() => setEditModal(reconData[0])}
-                >
-                  Edit Books entry
-                </button>
-                <button 
-                  className="btn btn-primary" 
-                  style={{ flex: 1, padding: '7px 8px', fontSize: 11.5 }}
-                  onClick={() => setEmailModal(reconData[0])}
-                >
-                  Draft Vendor Email
-                </button>
-              </div>
-            </div>
-
-            {/* Insight Card 2: TECH/045/24 */}
-            <div className="recon-insight-card">
-              <div className="recon-insight-header">
-                <span className="mono" style={{ fontWeight: 700, fontSize: 13 }}>TECH/045/24</span>
-                <span className="pill pill-dark" style={{ fontSize: 10 }}>MISSING</span>
-              </div>
-
-              <p style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.45 }}>
-                Invoice is entirely missing from 2B. ITC cannot be claimed this period.
-              </p>
-
-              <div style={{ marginTop: 14 }}>
-                <button 
-                  className="btn btn-secondary" 
-                  style={{ width: '100%', padding: '7px 8px', fontSize: 11.5 }}
-                  disabled={deferredInvoices.includes('TECH/045/24')}
-                  onClick={() => handleDeferInvoice('TECH/045/24')}
-                >
-                  {deferredInvoices.includes('TECH/045/24') ? 'Deferred to next period ✓' : 'Defer to next period'}
-                </button>
-              </div>
-            </div>
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -448,7 +442,11 @@ export default function ReconciliationPage() {
         <div>
           <div className="bottom-action-title">Finalize Reconciliation</div>
           <div className="bottom-action-sub">
-            143 items require attention before submission.
+            {actionRequiredCount > 0
+              ? `${actionRequiredCount} item${actionRequiredCount !== 1 ? 's' : ''} require attention before submission.`
+              : reconData.length > 0
+                ? 'All invoices reconciled cleanly — ready to file.'
+                : 'Ingest and reconcile invoices to continue.'}
           </div>
         </div>
 

@@ -1,54 +1,25 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
-import { 
-  UploadCloud, 
-  FileCheck, 
-  AlertTriangle, 
-  Clock, 
-  Sparkles, 
-  ArrowUpRight, 
-  CheckCircle2, 
-  FileText, 
+import {
+  UploadCloud,
+  AlertTriangle,
+  Sparkles,
+  ArrowUpRight,
+  CheckCircle2,
   Layers,
   X,
-  Plus
 } from 'lucide-react'
 import { uploadInvoices, getCaseInvoices } from '../api/client'
 
-const BASELINE_INVOICES = [
-  {
-    invoice_id: 'inv-base-1',
-    invoice_number: 'INV-2024-089',
-    type: 'B2B Invoice',
-    vendor_name: 'TechCorp India Pvt Ltd',
-    vendor_gstin: '27AABCV9603R1Z2',
-    total_amount: 125000,
-    status: 'extracted',
-  },
-  {
-    invoice_id: 'inv-base-2',
-    invoice_number: 'EWB-8839201',
-    type: 'E-Way Bill',
-    vendor_name: 'Logistics Hub Ltd',
-    vendor_gstin: '27AAACH1234F1Z1',
-    total_amount: 45600,
-    status: 'requires_review',
-  },
-  {
-    invoice_id: 'inv-base-3',
-    invoice_number: 'STMT-JULY-HDFC',
-    type: 'Bank Statement',
-    vendor_name: 'HDFC Bank',
-    vendor_gstin: '',
-    total_amount: null,
-    status: 'processing',
-  },
-]
-
 function formatCurrency(amount) {
   if (amount == null) return '—'
+  return new Intl.NumberFormat('en-IN', { maximumFractionDigits: 0 }).format(amount)
+}
+
+function formatCompact(amount) {
+  if (!amount) return '\u20b90'
   return new Intl.NumberFormat('en-IN', {
-    maximumFractionDigits: 0,
+    style: 'currency', currency: 'INR', maximumFractionDigits: 1, notation: 'compact',
   }).format(amount)
 }
 
@@ -56,43 +27,45 @@ export default function IngestionPage() {
   const { caseId } = useParams()
   const navigate = useNavigate()
   const fileInputRef = useRef(null)
-  const [invoices, setInvoices] = useState(BASELINE_INVOICES)
+
+  const [invoices, setInvoices] = useState([])
   const [uploading, setUploading] = useState(false)
   const [dragActive, setDragActive] = useState(false)
   const [selectedDoc, setSelectedDoc] = useState(null)
   const [showFullLog, setShowFullLog] = useState(false)
+  const [loaded, setLoaded] = useState(false)
 
   useEffect(() => {
     loadInvoices()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [caseId])
 
   async function loadInvoices() {
     try {
       const data = await getCaseInvoices(caseId)
-      if (data && data.length > 0) {
-        // Merge with base table structure
-        const formatted = data.map((inv) => ({
+      setInvoices(
+        (data || []).map((inv) => ({
           ...inv,
-          type: inv.category ? `${inv.category.replace('_', ' ').toUpperCase()}` : 'B2B Invoice',
+          type: inv.category ? inv.category.replace('_', ' ').toUpperCase() : 'INVOICE',
           status: inv.vendor_gstin ? 'extracted' : 'requires_review',
         }))
-        setInvoices(formatted)
-      }
+      )
     } catch (err) {
-      console.warn('Using baseline invoices for display:', err)
+      console.error('Could not load invoices for case', err)
+    } finally {
+      setLoaded(true)
     }
   }
 
   async function handleFiles(files) {
     if (!files || files.length === 0) return
     setUploading(true)
-    const fileList = Array.from(files)
     try {
-      const res = await uploadInvoices(fileList, caseId)
+      const res = await uploadInvoices(Array.from(files), caseId)
       if (res && res.invoices) {
         const newRows = res.invoices.map((inv) => ({
           ...inv,
-          type: 'B2B Invoice',
+          type: inv.category ? inv.category.replace('_', ' ').toUpperCase() : 'INVOICE',
           status: inv.vendor_gstin ? 'extracted' : 'requires_review',
         }))
         setInvoices((prev) => [...newRows, ...prev])
@@ -107,25 +80,54 @@ export default function IngestionPage() {
   const handleDrag = (e) => {
     e.preventDefault()
     e.stopPropagation()
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true)
-    } else if (e.type === 'dragleave') {
-      setDragActive(false)
-    }
+    if (e.type === 'dragenter' || e.type === 'dragover') setDragActive(true)
+    else if (e.type === 'dragleave') setDragActive(false)
   }
 
   const handleDrop = (e) => {
     e.preventDefault()
     e.stopPropagation()
     setDragActive(false)
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFiles(e.dataTransfer.files)
-    }
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) handleFiles(e.dataTransfer.files)
   }
+
+  const totalITC = invoices.reduce((sum, inv) => sum + (inv.tax_amount || 0), 0)
+  const totalPendingValue = invoices.reduce((sum, inv) => sum + (inv.total_amount || 0), 0)
+  const extractedCount = invoices.filter((inv) => inv.status === 'extracted').length
+  const confidenceScore = invoices.length > 0
+    ? Math.round((extractedCount / invoices.length) * 100)
+    : null
+  const flaggedCount = invoices.filter((inv) => inv.status === 'requires_review').length
+
+  const activityItems = []
+  invoices.slice(0, 4).forEach((inv) => {
+    if (inv.status === 'requires_review') {
+      activityItems.push({
+        key: `flag-${inv.invoice_id}`,
+        type: 'warning',
+        title: 'Discrepancy Flagged',
+        desc: <>Missing GSTIN on <strong>{inv.invoice_number}</strong>. Requires human verification.</>,
+        action: true,
+      })
+    } else {
+      activityItems.push({
+        key: `ok-${inv.invoice_id}`,
+        type: 'success',
+        title: 'Extraction Complete',
+        desc: (
+          <>
+            Successfully extracted <strong>{inv.invoice_number}</strong> from {inv.vendor_name}.
+            <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+              GSTIN detected: {inv.vendor_gstin}
+            </div>
+          </>
+        ),
+      })
+    }
+  })
 
   return (
     <div>
-      {/* Section 1: Compliance Health Overview */}
       <div style={{ marginBottom: 20 }}>
         <h2 style={{ fontSize: 16, fontWeight: 700, color: 'var(--text-primary)', marginBottom: 14 }}>
           Compliance Health Overview
@@ -134,35 +136,34 @@ export default function IngestionPage() {
         <div className="stat-row">
           <div className="stat-card">
             <div className="stat-card-label">TOTAL ITC CAPTURED</div>
-            <div className="stat-card-value">₹45.2L</div>
-            <div className="stat-card-sub trend-up">
-              ↗ +12% vs last month
+            <div className="stat-card-value">{formatCompact(totalITC)}</div>
+            <div className="stat-card-sub">
+              {invoices.length > 0 ? `Across ${invoices.length} invoice${invoices.length !== 1 ? 's' : ''}` : 'Upload invoices to begin'}
             </div>
           </div>
 
           <div className="stat-card">
             <div className="stat-card-label">PENDING RECONCILIATION</div>
-            <div className="stat-card-value">₹12.8L</div>
+            <div className="stat-card-value">{formatCompact(totalPendingValue)}</div>
             <div className="stat-card-sub">
-              42 invoices pending
+              {invoices.length > 0 ? `${invoices.length} invoice${invoices.length !== 1 ? 's' : ''} awaiting match` : 'No invoices yet'}
             </div>
           </div>
 
           <div className="stat-card">
             <div className="stat-card-label">AGENT CONFIDENCE SCORE</div>
-            <div className="stat-card-value" style={{ color: 'var(--secondary)' }}>94%</div>
+            <div className="stat-card-value" style={{ color: 'var(--secondary)' }}>
+              {confidenceScore != null ? `${confidenceScore}%` : '\u2014'}
+            </div>
             <div className="stat-card-sub">
-              High accuracy on latest batch
+              {flaggedCount > 0 ? `${flaggedCount} invoice${flaggedCount !== 1 ? 's' : ''} need review` : (invoices.length > 0 ? 'All invoices extracted cleanly' : 'No data yet')}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Main 2-Column Grid */}
       <div className="grid-2col">
-        {/* Left main: Ingestion Agent & Table */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 22 }}>
-          {/* Ingestion Agent Dropzone */}
           <div className="card">
             <div className="card-title">
               <div className="card-title-left">
@@ -171,7 +172,7 @@ export default function IngestionPage() {
               </div>
             </div>
 
-            <div 
+            <div
               className={`dropzone-container ${dragActive ? 'drag-active' : ''}`}
               onDragEnter={handleDrag}
               onDragLeave={handleDrag}
@@ -179,10 +180,10 @@ export default function IngestionPage() {
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
             >
-              <input 
+              <input
                 ref={fileInputRef}
-                type="file" 
-                multiple 
+                type="file"
+                multiple
                 style={{ display: 'none' }}
                 onChange={(e) => handleFiles(e.target.files)}
               />
@@ -191,24 +192,19 @@ export default function IngestionPage() {
               </div>
               <div className="dropzone-title">Drag & Drop Documents Here</div>
               <div className="dropzone-subtitle">
-                Upload Invoices, E-Way Bills, or Bank Statements. The agent will automatically extract and categorize data.
+                Upload invoices, e-way bills, or bank statements. The agent will automatically extract and categorize data.
               </div>
-              <button 
-                type="button" 
-                className="btn btn-secondary"
-                disabled={uploading}
-              >
-                {uploading ? 'Extracting with Document AI…' : 'Browse Files'}
+              <button type="button" className="btn btn-secondary" disabled={uploading}>
+                {uploading ? 'Extracting with Document AI\u2026' : 'Browse Files'}
               </button>
             </div>
           </div>
 
-          {/* Recently Ingested Table */}
           <div className="card">
             <div className="card-title">
               <span>Recently Ingested</span>
-              <button 
-                className="btn btn-secondary" 
+              <button
+                className="btn btn-secondary"
                 style={{ padding: '4px 10px', fontSize: 12 }}
                 onClick={() => navigate(`/case/${caseId}/reconciliation`)}
               >
@@ -216,56 +212,49 @@ export default function IngestionPage() {
               </button>
             </div>
 
-            <div className="data-table-container">
-              <table className="data-table">
-                <thead>
-                  <tr>
-                    <th>DOCUMENT ID</th>
-                    <th>TYPE</th>
-                    <th>SUPPLIER</th>
-                    <th>AMOUNT (₹)</th>
-                    <th>STATUS</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {invoices.map((inv, idx) => (
-                    <tr 
-                      key={inv.invoice_id || idx}
-                      style={{ cursor: 'pointer' }}
-                      onClick={() => setSelectedDoc(inv)}
-                    >
-                      <td className="mono" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
-                        {inv.invoice_number}
-                      </td>
-                      <td style={{ color: 'var(--text-secondary)' }}>
-                        {inv.type || 'B2B Invoice'}
-                      </td>
-                      <td style={{ fontWeight: 500 }}>
-                        {inv.vendor_name}
-                      </td>
-                      <td className="num" style={{ fontWeight: 600 }}>
-                        {inv.total_amount ? formatCurrency(inv.total_amount) : '—'}
-                      </td>
-                      <td>
-                        {inv.status === 'extracted' && (
-                          <span className="pill pill-accent">EXTRACTED</span>
-                        )}
-                        {inv.status === 'requires_review' && (
-                          <span className="pill pill-danger">REQUIRES REVIEW</span>
-                        )}
-                        {inv.status === 'processing' && (
-                          <span className="pill pill-neutral">PROCESSING</span>
-                        )}
-                      </td>
+            {!loaded ? (
+              <p style={{ fontSize: 13, color: 'var(--text-secondary)' }}>Loading\u2026</p>
+            ) : invoices.length === 0 ? (
+              <div className="empty-state">
+                <div className="empty-state-title">No documents yet</div>
+                <p>Upload invoices above to see them extracted here.</p>
+              </div>
+            ) : (
+              <div className="data-table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>DOCUMENT ID</th>
+                      <th>TYPE</th>
+                      <th>SUPPLIER</th>
+                      <th>AMOUNT (\u20b9)</th>
+                      <th>STATUS</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {invoices.map((inv, idx) => (
+                      <tr key={inv.invoice_id || idx} style={{ cursor: 'pointer' }} onClick={() => setSelectedDoc(inv)}>
+                        <td className="mono" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>
+                          {inv.invoice_number}
+                        </td>
+                        <td style={{ color: 'var(--text-secondary)' }}>{inv.type || 'INVOICE'}</td>
+                        <td style={{ fontWeight: 500 }}>{inv.vendor_name}</td>
+                        <td className="num" style={{ fontWeight: 600 }}>
+                          {inv.total_amount ? formatCurrency(inv.total_amount) : '\u2014'}
+                        </td>
+                        <td>
+                          {inv.status === 'extracted' && <span className="pill pill-accent">EXTRACTED</span>}
+                          {inv.status === 'requires_review' && <span className="pill pill-danger">REQUIRES REVIEW</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right side: Agent Activity Feed */}
         <div className="card">
           <div className="card-title">
             <div className="card-title-left">
@@ -275,74 +264,52 @@ export default function IngestionPage() {
           </div>
 
           <div className="activity-feed">
-            {/* Activity 1 */}
-            <div className="activity-card-item">
-              <div className="activity-card-header">
-                <div className="activity-card-title">
-                  <CheckCircle2 size={15} color="#059669" />
-                  <span>Extraction Complete</span>
-                </div>
-                <span className="activity-card-time">10:42 AM</span>
-              </div>
-              <div className="activity-card-desc">
-                Successfully extracted 15 data points from <strong>INV-2024-089</strong>.
-                <div style={{ marginTop: 4, fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
-                  GSTIN detected: 27AABCV9603R1Z2
-                </div>
-              </div>
-            </div>
-
-            {/* Activity 2 */}
-            <div className="activity-card-item" style={{ borderColor: '#FECACA' }}>
-              <div className="activity-card-header">
-                <div className="activity-card-title" style={{ color: '#DC2626' }}>
-                  <AlertTriangle size={15} color="#DC2626" />
-                  <span>Discrepancy Flagged</span>
-                </div>
-                <span className="activity-card-time">10:38 AM</span>
-              </div>
-              <div className="activity-card-desc">
-                HSN code mismatch on <strong>EWB-8839201</strong>. Requires human verification.
-              </div>
-              <div className="activity-card-action">
-                <button 
-                  className="btn btn-outline-primary" 
-                  style={{ fontSize: 11.5, padding: '4px 10px', color: '#DC2626', borderColor: '#FECACA' }}
-                  onClick={() => navigate(`/case/${caseId}/reconciliation`)}
+            {activityItems.length === 0 ? (
+              <p style={{ fontSize: 12.5, color: 'var(--text-secondary)' }}>
+                No activity yet \u2014 upload a document to get started.
+              </p>
+            ) : (
+              activityItems.map((item) => (
+                <div
+                  className="activity-card-item"
+                  key={item.key}
+                  style={item.type === 'warning' ? { borderColor: '#FECACA' } : undefined}
                 >
-                  Review Now
-                </button>
-              </div>
-            </div>
-
-            {/* Activity 3 */}
-            <div className="activity-card-item">
-              <div className="activity-card-header">
-                <div className="activity-card-title">
-                  <Layers size={15} color="#2563EB" />
-                  <span>Batch Uploaded</span>
+                  <div className="activity-card-header">
+                    <div className="activity-card-title" style={item.type === 'warning' ? { color: '#DC2626' } : undefined}>
+                      {item.type === 'warning'
+                        ? <AlertTriangle size={15} color="#DC2626" />
+                        : <CheckCircle2 size={15} color="#059669" />}
+                      <span>{item.title}</span>
+                    </div>
+                  </div>
+                  <div className="activity-card-desc">{item.desc}</div>
+                  {item.action && (
+                    <div className="activity-card-action">
+                      <button
+                        className="btn btn-outline-primary"
+                        style={{ fontSize: 11.5, padding: '4px 10px', color: '#DC2626', borderColor: '#FECACA' }}
+                        onClick={() => navigate(`/case/${caseId}/reconciliation`)}
+                      >
+                        Review Now
+                      </button>
+                    </div>
+                  )}
                 </div>
-                <span className="activity-card-time">10:15 AM</span>
-              </div>
-              <div className="activity-card-desc">
-                Received 45 new documents via email ingestion channel.
-              </div>
-            </div>
+              ))
+            )}
           </div>
 
-          <div style={{ marginTop: 18, textAlign: 'center', borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-            <button 
-              className="btn btn-secondary" 
-              style={{ width: '100%', fontSize: 12 }}
-              onClick={() => setShowFullLog(true)}
-            >
-              View Full Log
-            </button>
-          </div>
+          {invoices.length > 0 && (
+            <div style={{ marginTop: 18, textAlign: 'center', borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+              <button className="btn btn-secondary" style={{ width: '100%', fontSize: 12 }} onClick={() => setShowFullLog(true)}>
+                View Full Log
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
-      {/* Document Detail Modal */}
       {selectedDoc && (
         <div className="modal-backdrop" onClick={() => setSelectedDoc(null)}>
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
@@ -365,13 +332,9 @@ export default function IngestionPage() {
                 <span style={{ color: 'var(--text-secondary)' }}>Supplier GSTIN:</span>
                 <span className="mono">{selectedDoc.vendor_gstin || 'Not detected (flagged)'}</span>
               </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Total Amount:</span>
-                <span className="num" style={{ fontWeight: 700 }}>₹{formatCurrency(selectedDoc.total_amount)}</span>
-              </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0' }}>
-                <span style={{ color: 'var(--text-secondary)' }}>Agent Confidence:</span>
-                <span style={{ color: '#059669', fontWeight: 600 }}>98.2%</span>
+                <span style={{ color: 'var(--text-secondary)' }}>Total Amount:</span>
+                <span className="num" style={{ fontWeight: 700 }}>\u20b9{formatCurrency(selectedDoc.total_amount)}</span>
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 12 }}>
                 <button className="btn btn-primary" onClick={() => setSelectedDoc(null)}>Close</button>
@@ -381,33 +344,24 @@ export default function IngestionPage() {
         </div>
       )}
 
-      {/* Full Activity Log Modal */}
       {showFullLog && (
         <div className="modal-backdrop" onClick={() => setShowFullLog(false)}>
           <div className="modal-box" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">Agent Execution Audit Log</h3>
+              <h3 className="modal-title">Agent Execution Log</h3>
               <button className="modal-close-btn" onClick={() => setShowFullLog(false)}>
                 <X size={18} />
               </button>
             </div>
             <div style={{ maxHeight: 320, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 10 }}>
-              <div className="activity-card-item">
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>10:42:15 AM - IngestionAgent</div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>Normalized 15 fields for invoice INV-2024-089 via Document AI processor.</div>
-              </div>
-              <div className="activity-card-item">
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>10:38:04 AM - ClassificationAgent</div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>Flagged HSN code variance for Logistics Hub Ltd against GST tariff table.</div>
-              </div>
-              <div className="activity-card-item">
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>10:15:00 AM - IngestionAgent</div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>Automated mailbox polling retrieved 45 PDF attachments.</div>
-              </div>
-              <div className="activity-card-item">
-                <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>09:30:20 AM - Orchestrator</div>
-                <div style={{ fontSize: 12.5, marginTop: 2 }}>Initialized case workflow for Period July 2024.</div>
-              </div>
+              {invoices.map((inv, idx) => (
+                <div className="activity-card-item" key={idx}>
+                  <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>IngestionAgent</div>
+                  <div style={{ fontSize: 12.5, marginTop: 2 }}>
+                    Extracted {inv.invoice_number} from {inv.vendor_name} via Document AI.
+                  </div>
+                </div>
+              ))}
             </div>
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 14 }}>
               <button className="btn btn-secondary" onClick={() => setShowFullLog(false)}>Dismiss</button>

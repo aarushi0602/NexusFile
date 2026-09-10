@@ -45,6 +45,29 @@ def get_case(case_id: str) -> dict:
     return doc.to_dict()
 
 
+def find_case_by_email(email: str) -> dict:
+    """
+    Looks up a case whose profile.email matches. This is what powers the
+    'Log in' flow — since there's no separate user-account system, a
+    business's email is the lookup key back to their existing case.
+
+    Deliberately a plain equality filter with no order_by: combining an
+    equality filter with order_by on a different field requires a
+    Firestore composite index to be created first, which would break
+    this on first use in a fresh project.
+    """
+    client = get_client()
+    query = client.collection("cases").where("profile.email", "==", email).limit(5)
+    docs = list(query.stream())
+    if not docs:
+        return None
+    # If multiple cases share an email, return the most recently updated one.
+    docs.sort(key=lambda d: d.to_dict().get("updated_at", ""), reverse=True)
+    data = docs[0].to_dict()
+    data["case_id"] = docs[0].id
+    return data
+
+
 def log_audit_event(case_id: str, event: str, details: dict = None):
     """Appends an entry to the case's audit subcollection — useful
     for showing 'what did the agent actually do and when' in the UI."""
